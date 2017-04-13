@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -25,8 +26,8 @@ type MetricTarget struct {
 var (
 	addr                  = flag.String("listen-address", ":8080", "The address to listen on for HTTP requests.")
 	zkQuorum              = flag.String("zookeeper.quorum", "", "The zookeeper quorum.")
+	mesosNamespace        = flag.String("mesos.namespace", "mesos", "The state url of mesos")
 	schedulerHttpEndpoint = flag.String("schduler.httpEndpoint", "127.0.0.1:8899", "The http endpoint of scheduler")
-	stateHttpEndpoint     = flag.String("mesos.stateHttpEndpoint", "", "The state url of mesos")
 )
 
 var (
@@ -121,7 +122,7 @@ func getTarget(namespace string, node string) *MetricTarget {
 
 func executor(handler func()) {
 	for {
-		func(){
+		func() {
 			defer catch()
 			handler()
 			time.Sleep(30 * time.Second)
@@ -136,13 +137,37 @@ func catch() {
 	}
 }
 
+func getMesosMaster(connect *zk.Conn) (string, error) {
+	nodes, _, err := connect.Children("/" + *mesosNamespace)
+	if err != nil {
+		return "", err
+	}
+	var masters = make([]string, 0)
+	for _, node := range nodes {
+		if strings.HasPrefix(node, "json.info_") {
+			masters = append(masters, node)
+		}
+	}
+	if len(masters) < 1 {
+		return "", errors.New("Cannot get mesos master info")
+	}
+	sort.Strings(masters)
+	data, _, err := connect.Get("/" + *mesosNamespace + "/" + masters[0])
+	if err != nil {
+		return "", err
+	}
+	var jsonObj map[string]interface{}
+	json.Unmarshal(data, &jsonObj)
+	address := jsonObj["address"].(map[string]interface{})
+	ret := address["ip"].(string) + ":" + strconv.Itoa(int(address["port"].(float64)))
+	log.Printf("master :%s", ret)
+	return ret, nil
+}
+
 func main() {
 	flag.Parse()
 	if len(*zkQuorum) < 1 {
 		log.Fatal("lack param zookeeper.quorum")
-	}
-	if len(*stateHttpEndpoint) < 1 {
-		log.Fatal("lack param mesos.stateHttpEndpoint")
 	}
 	connect := connectZk()
 	targets := [...]*MetricTarget{getTarget("config", "app"), getTarget("config", "job"), getTarget("state", "ready"),
@@ -231,7 +256,12 @@ func main() {
 		}
 	})
 	go executor(func() {
-		resp, err := http.Get("http://" + *stateHttpEndpoint + "/state")
+		master, err := getMesosMaster(connect)
+		if err != nil {
+			log.Printf("get master info err %v", err)
+			return
+		}
+		resp, err := http.Get("http://" + master + "/state")
 		if err != nil {
 			log.Print(err)
 			return
@@ -247,7 +277,7 @@ func main() {
 					for _, executor := range executors.([]interface{}) {
 						if id, ok := executor.(map[string]interface{})["executor_id"]; ok {
 							idSegments := strings.Split(id.(string), "@-@")
-							exists, _, err := connect.Exists(getQualityPath(getTarget("config", "job")) + "/" + idSegments[0])
+							exists, _, err := connect.Exists(getQualityPath(getTarget("config", "app")) + "/" + idSegments[0])
 							if err == nil && !exists {
 								invalidExecutors.WithLabelValues(id.(string)).Inc()
 							}
