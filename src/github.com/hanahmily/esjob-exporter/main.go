@@ -28,6 +28,7 @@ var (
 	zkQuorum              = flag.String("zookeeper.quorum", "", "The zookeeper quorum.")
 	mesosNamespace        = flag.String("mesos.namespace", "mesos", "The state url of mesos")
 	schedulerHttpEndpoint = flag.String("schduler.httpEndpoint", "127.0.0.1:8899", "The http endpoint of scheduler")
+	mesosRole             = flag.String("mesos.role", "", "The role of mesos")
 )
 
 var (
@@ -99,7 +100,7 @@ func metricChildren(connect *zk.Conn, target *MetricTarget) <-chan zk.Event {
 }
 
 func newMap() *map[string]float64 {
-	return &map[string]float64{"DEMAON": 0, "TRANSIENT": 0}
+	return &map[string]float64{"DAEMON": 0, "TRANSIENT": 0}
 }
 
 func getExecutionType(connect *zk.Conn, node string) (string, error) {
@@ -113,7 +114,7 @@ func getExecutionType(connect *zk.Conn, node string) (string, error) {
 }
 
 func getQualityPath(target *MetricTarget) string {
-	return "/elastic-job-cloud/" + target.Namespace + "/" + target.Node
+	return "/" + *mesosRole + "/" + target.Namespace + "/" + target.Node
 }
 
 func getTarget(namespace string, node string) *MetricTarget {
@@ -169,6 +170,9 @@ func main() {
 	if len(*zkQuorum) < 1 {
 		log.Fatal("lack param zookeeper.quorum")
 	}
+	if len(*mesosRole) < 1 {
+		log.Fatal("lack param mesos.role")
+	}
 	connect := connectZk()
 	targets := [...]*MetricTarget{getTarget("config", "app"), getTarget("config", "job"), getTarget("state", "ready"),
 		getTarget("state", "running"), getTarget("state", "failover")}
@@ -218,7 +222,7 @@ func main() {
 		}
 	})
 	go executor(func() {
-		resp, err := http.Get("http://" + *schedulerHttpEndpoint + "/job/tasks/running")
+		resp, err := http.Get("http://" + *schedulerHttpEndpoint + "/" + *mesosRole + "/api/job/tasks/running")
 		if err != nil {
 			log.Print(err)
 			return
@@ -227,11 +231,11 @@ func main() {
 		jsonStr, _ := ioutil.ReadAll(resp.Body)
 		var jsonObj interface{}
 		json.Unmarshal(jsonStr, &jsonObj)
-		var jobMap = map[string]map[string]bool{"DEAMON": make(map[string]bool), "TRANSIENT": make(map[string]bool)}
+		var jobMap = map[string]map[string]bool{"DAEMON": make(map[string]bool), "TRANSIENT": make(map[string]bool)}
 		for _, task := range jsonObj.([]interface{}) {
 			var jobName string
 			if metaInfo, ok := task.(map[string]interface{})["metaInfo"]; ok {
-				if name, ok := metaInfo.(map[string]interface{})["name"]; ok {
+				if name, ok := metaInfo.(map[string]interface{})["jobName"]; ok {
 					jobName = name.(string)
 				} else {
 					continue
@@ -273,6 +277,11 @@ func main() {
 		invalidExecutors.Reset()
 		if frameworks, ok := state["frameworks"]; ok {
 			for _, framework := range frameworks.([]interface{}) {
+				name := framework.(map[string]interface{})["name"].(string)
+				if name[len("Elastic-Job-Cloud-"):] != *mesosRole {
+					continue
+				}
+				log.Printf("check role %s", name[len("Elastic-Job-Cloud-"):])
 				if executors, ok := framework.(map[string]interface{})["executors"]; ok {
 					for _, executor := range executors.([]interface{}) {
 						if id, ok := executor.(map[string]interface{})["executor_id"]; ok {
