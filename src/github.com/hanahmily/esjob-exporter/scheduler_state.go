@@ -10,7 +10,7 @@ import (
 
 func SchedulerRunning(connect *zk.Conn) {
 	go executor(func() {
-		resp, err := http.Get("http://ops.cluster/" + *mesosRole + "/api/job/tasks/running")
+		resp, err := http.Get("http://jobcloud.api:8899/" + *mesosRole + "/api/job/tasks/running")
 		if err != nil {
 			log.Print(err)
 			return
